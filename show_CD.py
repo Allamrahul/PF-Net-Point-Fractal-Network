@@ -24,7 +24,7 @@ from model_PFNet import _netlocalD,_netG
 parser = argparse.ArgumentParser()
 #parser.add_argument('--dataset',  default='ModelNet40', help='ModelNet10|ModelNet40|ShapeNet')
 parser.add_argument('--dataroot',  default='dataset/train', help='path to dataset')
-parser.add_argument('--workers', type=int,default=2, help='number of data loading workers')
+parser.add_argument('--workers', type=int,default=0, help='number of data loading workers')
 parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
 parser.add_argument('--pnum', type=int, default=2048, help='the point number of a sample')
 parser.add_argument('--crop_point_num',type=int,default=512,help='0 means do not use else use with this weight')
@@ -35,7 +35,7 @@ parser.add_argument('--learning_rate', default=0.0002, type=float, help='learnin
 parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for adam. default=0.9')
 parser.add_argument('--cuda', type = bool, default = False, help='enables cuda')
 parser.add_argument('--ngpu', type=int, default=2, help='number of GPUs to use')
-parser.add_argument('--netG', default='Checkpoint/point_netG.pth', help="path to netG (to continue training)")
+parser.add_argument('--netG', default='Checkpoint/point_netG160.pth', help="path to netG (to continue training)")
 parser.add_argument('--netD', default='', help="path to netD (to continue training)")
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--drop',type=float,default=0.2)
@@ -44,14 +44,20 @@ parser.add_argument('--point_scales_list',type=list,default=[2048,1024,512],help
 parser.add_argument('--each_scales_size',type=int,default=1,help='each scales size')
 parser.add_argument('--wtl2',type=float,default=0.9,help='0 means do not use else use with this weight')
 parser.add_argument('--cropmethod', default = 'random_center', help = 'random|center|random_center')
+parser.add_argument('--translation_delta',type=float,default=0.03,help='translation for pc')
 opt = parser.parse_args()
 print(opt)
 
 def distance_squre1(p1,p2):
     return (p1[0]-p2[0])**2+(p1[1]-p2[1])**2+(p1[2]-p2[2])**2 
 
+def translate_pc(points):
+    # translation = np.random.uniform(-opt.tran, self.translate_range)
+    points[:, :, 0:3] += opt.translation_delta
+    return points
 
-test_dset = shapenet_part_loader.PartDataset( root='./dataset/shapenetcore_partanno_segmentation_benchmark_v0/',classification=True, class_choice='Airplane', npoints=opt.pnum, split='test')
+
+test_dset = shapenet_part_loader.PartDataset( root='./dataset/shapenetcore_partanno_segmentation_benchmark_v0/',classification=True, class_choice=None, npoints=opt.pnum, split='test')
 test_dataloader = torch.utils.data.DataLoader(test_dset, batch_size=opt.batchSize,
                                          shuffle=False,num_workers = int(opt.workers))
 length = len(test_dataloader)
@@ -71,14 +77,31 @@ CD = 0
 Gt_Pre =0
 Pre_Gt = 0
 IDX = 1
+
+
+def save(p, filename):
+    np.savetxt(filename + '.csv', torch.squeeze(p), fmt="%f,%f,%f")
+
+
+import copy
+
+
 for i, data in enumerate(test_dataloader, 0):
-        
+
+
     real_point, target = data
+
+    save(real_point, "real_point_wholepc")
+
     real_point = torch.unsqueeze(real_point, 1)
     batch_size = real_point.size()[0]
-    real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)
-    input_cropped_partial =torch.FloatTensor(batch_size, 1, opt.pnum-opt.crop_point_num, 3)     
-    input_cropped1.resize_(real_point.size()).copy_(real_point)
+    # print("Real point shape", real_point.shape)
+
+
+    real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)  # target
+    input_cropped_partial =torch.FloatTensor(batch_size, 1, opt.pnum-opt.crop_point_num, 3)       # input
+    input_cropped1.resize_(real_point.size()).copy_(real_point) # same size as real_point, whole pc
+
     p_origin = [0,0,0]
 
     choice = [torch.Tensor([1,0,0]),torch.Tensor([0,0,1]),torch.Tensor([1,0,1]),torch.Tensor([-1,0,0]),torch.Tensor([-1,1,0])]
@@ -89,51 +112,90 @@ for i, data in enumerate(test_dataloader, 0):
     distance_list = []
 #    p_center  = real_point[0,0,index]
     p_center = index
+
+    # sorting points based on proximity to p_center
     for num in range(opt.pnum):
         distance_list.append(distance_squre(real_point[0,0,num],p_center))
     distance_order = sorted(enumerate(distance_list), key = lambda x:x[1])
-    
+
+    # replacing the closest crop_point_num points in input_cropped1 to zeros
+    # Adding the closes crop_point_num points to real_center
     for sp in range(opt.crop_point_num):
-        input_cropped1.data[0,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0])
-        real_center.data[0,0,sp] = real_point[0,0,distance_order[sp][0]]
-        
+        input_cropped1.data[0,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0]) # whole pc, replacing the closes points with zeros
+        real_center.data[0,0,sp] = real_point[0,0,distance_order[sp][0]]    # target
+
+    # getting the rest of the points in order
     crop_num_list = []
     for num_ in range(opt.pnum-opt.crop_point_num):
         crop_num_list.append(distance_order[num_+opt.crop_point_num][0])
     indices = torch.LongTensor(crop_num_list)
+
+    # input - contains not the closest points
     input_cropped_partial[0,0]=torch.index_select(real_point[0,0],0,indices)
     input_cropped_partial = torch.squeeze(input_cropped_partial,1)
+
     input_cropped_partial = input_cropped_partial.to(device)
-     
-    real_center = torch.squeeze(real_center,1)
+    real_center = torch.squeeze(real_center,1) # target
 #    real_center_key_idx = utils.farthest_point_sample(real_center,64,train = False)
 #    real_center_key = utils.index_points(real_center,real_center_key_idx)
 #    input_cropped1 = input_cropped1.to(device)
-    
-    input_cropped1 = torch.squeeze(input_cropped1,1)
+
+    # save(input_cropped1, "input_cropped_before_trans_trials")
+    # IFPS of cropped ip
+    input_cropped1 = torch.squeeze(input_cropped1, 1)
+    # print("shape here ", input_cropped1.shape)
+
+    input_cropped1 = translate_pc(input_cropped1)
+
+    # print(tx)
+
+    # save(input_cropped1, "input_cropped1_before_tran")
+    # save(real_center, "real_center_before_tran")
+    #
+    #
+    # save(input_cropped1, "input_cropped1_after_tran")
+    # save(real_center, "real_center_after_tran")
+
     input_cropped2_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[1],RAN = True)
     input_cropped2     = utils.index_points(input_cropped1,input_cropped2_idx)
+
     input_cropped3_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[2],RAN = False)
     input_cropped3     = utils.index_points(input_cropped1,input_cropped3_idx)
+
     input_cropped2 = input_cropped2.to(device)
-    input_cropped3 = input_cropped3.to(device)      
-    input_cropped  = [input_cropped1,input_cropped2,input_cropped3]
+    input_cropped3 = input_cropped3.to(device)
+
+    input_cropped  = [input_cropped1, input_cropped2, input_cropped3]
+
     
 #    fake,fake_part = point_netG(input_cropped)
-    fake_center1,fake_center2,fake=point_netG(input_cropped)
-    fake_whole = torch.cat((input_cropped_partial,fake),1)
+    fake_center1, fake_center2, fake = point_netG(input_cropped)  # fakes in 3 scales
+    # save(fake.detach(), "fake_fine")
+
+    fake_whole = torch.cat((input_cropped_partial, fake), 1)  # putting the whole fake together
+
+    # save(fake_whole.detach(), "fake_whole")
+
+    # save(real_center, "real_center_before")
+    print("real center before shape ", real_center.shape)
+    real_center = translate_pc(real_center)
+    save(real_center, "real_center_after")
+
     fake_whole = fake_whole.to(device)
-    real_point = real_point.to(device)
-    real_center = real_center.to(device)
-    dist_all, dist1, dist2 = criterion_PointLoss(torch.squeeze(fake,1),torch.squeeze(real_center,1))#+0.1*criterion_PointLoss(torch.squeeze(fake_part,1),torch.squeeze(real_center,1))
+    real_point = real_point.to(device)  # real whole cloud
+    real_center = real_center.to(device)  # target only
+
+    dist_all, dist1, dist2 = criterion_PointLoss(torch.squeeze(fake, 1), torch.squeeze(real_center, 1))#+0.1*criterion_PointLoss(torch.squeeze(fake_part,1),torch.squeeze(real_center,1))
     dist_all=dist_all.cpu().detach().numpy()
     dist1 =dist1.cpu().detach().numpy()
     dist2 = dist2.cpu().detach().numpy()
     CD = CD + dist_all/length
     Gt_Pre = Gt_Pre + dist1/length
     Pre_Gt = Pre_Gt + dist2/length
-    print(CD,Gt_Pre,Pre_Gt)
-print(CD,Gt_Pre,Pre_Gt)
+    print(CD, Gt_Pre, Pre_Gt)
+
+
+print(CD, Gt_Pre, Pre_Gt)
 print("CD:{} , Gt_Pre:{} , Pre_Gt:{}".format(float(CD),float(Gt_Pre),float(Pre_Gt)))
 print(length)    
     
