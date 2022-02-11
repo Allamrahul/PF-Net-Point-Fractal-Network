@@ -15,12 +15,12 @@ import data_utils as d_utils
 import ModelNet40Loader
 import shapenet_part_loader
 from model_PFNet import _netlocalD,_netG
-
+import numpy as np
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataroot',  default='dataset/train', help='path to dataset')
-parser.add_argument('--workers', type=int,default=2, help='number of data loading workers')
+parser.add_argument('--workers', type=int,default=0, help='number of data loading workers')
 parser.add_argument('--batchSize', type=int, default=24, help='input batch size')
 parser.add_argument('--pnum', type=int, default=2048, help='the point number of a sample')
 parser.add_argument('--crop_point_num',type=int,default=512,help='0 means do not use else use with this weight')
@@ -46,11 +46,11 @@ print(opt)
 
 blue = lambda x: '\033[94m' + x + '\033[0m'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USE_CUDA = True
+USE_CUDA = False
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 point_netG = _netG(opt.num_scales,opt.each_scales_size,opt.point_scales_list,opt.crop_point_num)
 point_netD = _netlocalD(opt.crop_point_num)
-cudnn.benchmark = True
+cudnn.benchmark = False
 resume_epoch=0
 
 def weights_init_normal(m):
@@ -65,6 +65,82 @@ def weights_init_normal(m):
     elif classname.find("BatchNorm1d") != -1:
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0) 
+
+def centeroidnp(tns, sp=None): # input : 24 x 2048 x 3
+    """
+    computes centroid of point cloud
+    :param tns : bs x pc_size x 3
+    :return res : bs x 3
+    """
+    bs = tns.shape[0]
+    res = torch.FloatTensor(bs, 3)
+
+    shape = sp if sp else tns.shape[1]
+
+    for x in range(bs):
+        a = torch.sum(tns[x][:, 0])/shape
+        b = torch.sum(tns[x][:, 1])/shape
+        c = torch.sum(tns[x][:, 2])/shape
+
+        res[x] = torch.tensor((a, b, c))
+    return res
+
+
+def tranformation_mtx(p1, p2):  # p2 , p1 is the old centroid
+    """
+    computes the transformation matrix between source point cloud centroid and destiantion point cloud centroid p2
+    :param p1: bs x 3
+    :param p2: bs x 3
+    :return p: bs x 4 x 4
+    """
+    bs = p1.shape[0]
+    res = torch.FloatTensor(bs, 4, 4)
+
+    for x in range(bs):
+        res[x] = torch.FloatTensor(
+            [[1, 0, 0, p2[x][0] - p1[x][0]],
+             [0, 1, 0, p2[x][1] - p1[x][1]],
+             [0, 0, 1, p2[x][2] - p1[x][2]],
+             [0, 0, 0, 1]]
+        )
+
+    return res
+
+def final_t(tx, input_cropped1, real_point):
+    """
+    Accepts tx, the transformation mtx, the input_cropped points and the real_points (ground truth)
+    :param : tx : bs x 4 x 4
+    :input_cropped1_tmp : (bs, 1, partial_num, 3)
+    :real_point : (bs, 1, crop_num, 3)
+    """
+    bs = input_cropped1.shape[0]
+
+    # squeezing both point clouds
+    input_cropped1_tmp = torch.squeeze(input_cropped1) # bs x partial_num x 3
+    real_point_tmp = torch.squeeze(real_point) # bs x crop_num x 3
+
+    ip_shape = input_cropped1_tmp.shape[1]
+    gt_shape = real_point_tmp.shape[1]
+
+    # creating templates
+    input_cropped1_p = torch.FloatTensor(bs, ip_shape, 4)
+    real_point_p = torch.FloatTensor(bs, gt_shape, 4)
+    input_cropped1_f = torch.FloatTensor(bs, ip_shape, 3)
+    real_point_f = torch.FloatTensor(bs, gt_shape, 3)
+
+
+    for i in range(bs):
+        # padding
+        temp = torch.ones((ip_shape, 1))
+        input_cropped1_p[i] = torch.cat((input_cropped1_tmp[i], temp), 1)
+
+        temp = torch.ones((gt_shape, 1))
+        real_point_p[i] = torch.cat((real_point_tmp[i], temp), 1)
+
+        # applying the matrix transformation for both point clouds, selcting the first 3 rows and taking transpose
+        input_cropped1_f[i] = torch.matmul(tx[i], input_cropped1_p[i].t())[:3, :].t()
+        real_point_f[i] = torch.matmul(tx[i], real_point_p[i].t())[:3, :].t()
+    return torch.unsqueeze(input_cropped1_f, 1), torch.unsqueeze(real_point_f, 1)
 
 if USE_CUDA:       
     print("Let's use", torch.cuda.device_count(), "GPUs!")
@@ -117,8 +193,9 @@ test_dataloader = torch.utils.data.DataLoader(test_dset, batch_size=opt.batchSiz
 #                                         shuffle=True,num_workers = int(opt.workers))
 
 #pointcls_net.apply(weights_init)
-print(point_netG)
-print(point_netD)
+
+# print(point_netG)
+# print(point_netD)
 
 criterion = torch.nn.BCEWithLogitsLoss().to(device)
 criterion_PointLoss = PointLoss().to(device)
@@ -156,22 +233,33 @@ if opt.D_choose == 1:
         for i, data in enumerate(dataloader, 0):
             
             real_point, target = data
-            
-    
+
             batch_size = real_point.size()[0]
-            real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)       
-            input_cropped1 = torch.FloatTensor(batch_size, opt.pnum, 3)
+            print(batch_size)
+
+            # computing whole point cloud centroids
+            real_point_centroids = centeroidnp(real_point)  # bs x 3 TODO
+
+            real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3) # bs x 1 x 512 x 3 , GT
+
+            input_cropped1 = torch.FloatTensor(batch_size, opt.pnum, 3) # bs x 2048 x 3
             input_cropped1 = input_cropped1.data.copy_(real_point)
-            real_point = torch.unsqueeze(real_point, 1)
-            input_cropped1 = torch.unsqueeze(input_cropped1,1)
+
+            real_point = torch.unsqueeze(real_point, 1) # bs x 1 x 2048 x 3
+            input_cropped1 = torch.unsqueeze(input_cropped1, 1) # bs x 1 x 2048 x 3
+
+            # print(real_point.shape, input_cropped1.shape)
+
             p_origin = [0,0,0]
             if opt.cropmethod == 'random_center':
                 #Set viewpoints
                 choice = [torch.Tensor([1,0,0]),torch.Tensor([0,0,1]),torch.Tensor([1,0,1]),torch.Tensor([-1,0,0]),torch.Tensor([-1,1,0])]
-                for m in range(batch_size):
+                for m in range(batch_size): # 24
                     index = random.sample(choice,1)#Random choose one of the viewpoint
                     distance_list = []
                     p_center = index[0]
+
+
                     for n in range(opt.pnum):
                         distance_list.append(distance_squre(real_point[m,0,n],p_center))
                     distance_order = sorted(enumerate(distance_list), key  = lambda x:x[1])
@@ -179,16 +267,29 @@ if opt.D_choose == 1:
                     for sp in range(opt.crop_point_num):
                         input_cropped1.data[m,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0])
                         real_center.data[m,0,sp] = real_point[m,0,distance_order[sp][0]]
+
+            print("HERE", input_cropped1.shape, real_center.shape) # torch.Size([24, 1, 2048, 3]) torch.Size([24, 1, 512, 3])
+
             label.resize_([batch_size,1]).fill_(real_label)
+
             real_point = real_point.to(device)
             real_center = real_center.to(device)
             input_cropped1 = input_cropped1.to(device)
             label = label.to(device)
+
             ############################
             # (1) data prepare
-            ###########################      
+            ###########################
+            # compute centroid of partial point cloud : op: bs x 3
+            input_cropped1_centroids = centeroidnp(torch.squeeze(input_cropped1, 1), opt.pnum - opt.crop_point_num)
+
+            # transforming both the partial pc and gt point cloud before ifps
+            tx = tranformation_mtx(real_point_centroids, input_cropped1_centroids)  # TODO
+            input_cropped1, real_center = final_t(tx, input_cropped1, real_center)
+
             real_center = Variable(real_center,requires_grad=True)
             real_center = torch.squeeze(real_center,1)
+
             real_center_key1_idx = utils.farthest_point_sample(real_center,64,RAN = False)
             real_center_key1 = utils.index_points(real_center,real_center_key1_idx)
             real_center_key1 =Variable(real_center_key1,requires_grad=True)
@@ -197,7 +298,9 @@ if opt.D_choose == 1:
             real_center_key2 = utils.index_points(real_center,real_center_key2_idx)
             real_center_key2 =Variable(real_center_key2,requires_grad=True)
 
+
             input_cropped1 = torch.squeeze(input_cropped1,1)
+
             input_cropped2_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[1],RAN = True)
             input_cropped2     = utils.index_points(input_cropped1,input_cropped2_idx)
             input_cropped3_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[2],RAN = False)
@@ -207,14 +310,15 @@ if opt.D_choose == 1:
             input_cropped3 = Variable(input_cropped3,requires_grad=True)
             input_cropped2 = input_cropped2.to(device)
             input_cropped3 = input_cropped3.to(device)      
-            input_cropped  = [input_cropped1,input_cropped2,input_cropped3]
+            input_cropped = [input_cropped1, input_cropped2, input_cropped3]
+
             point_netG = point_netG.train()
             point_netD = point_netD.train()
             ############################
             # (2) Update D network
             ###########################        
             point_netD.zero_grad()
-            real_center = torch.unsqueeze(real_center,1)   
+            real_center = torch.unsqueeze(real_center, 1)
             output = point_netD(real_center)
             errD_real = criterion(output,label)
             errD_real.backward()
@@ -257,8 +361,10 @@ if opt.D_choose == 1:
                 f.write('\n'+'After, '+str(i)+'-th batch')
                 for i, data in enumerate(test_dataloader, 0):
                     real_point, target = data
-                    
-            
+
+                    # computing whole point cloud centroids
+                    real_point_centroids = centeroidnp(real_point)  # bs x 3 TODO
+
                     batch_size = real_point.size()[0]
                     real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)
                     input_cropped1 = torch.FloatTensor(batch_size, opt.pnum, 3)
@@ -280,7 +386,16 @@ if opt.D_choose == 1:
                             distance_order = sorted(enumerate(distance_list), key  = lambda x:x[1])                         
                             for sp in range(opt.crop_point_num):
                                 input_cropped1.data[m,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0])
-                                real_center.data[m,0,sp] = real_point[m,0,distance_order[sp][0]]  
+                                real_center.data[m,0,sp] = real_point[m,0,distance_order[sp][0]]
+
+                    # compute centroid of partial point cloud : op: bs x 3
+                    input_cropped1_centroids = centeroidnp(torch.squeeze(input_cropped1, 1),
+                                                           opt.pnum - opt.crop_point_num)
+
+                    # transforming both the partial pc and gt point cloud before ifps
+                    tx = tranformation_mtx(real_point_centroids, input_cropped1_centroids)  # TODO
+                    input_cropped1, real_center = final_t(tx, input_cropped1, real_center)
+
                     real_center = real_center.to(device)
                     real_center = torch.squeeze(real_center,1)
                     input_cropped1 = input_cropped1.to(device) 
@@ -293,7 +408,8 @@ if opt.D_choose == 1:
                     input_cropped2 = Variable(input_cropped2,requires_grad=False)
                     input_cropped3 = Variable(input_cropped3,requires_grad=False)
                     input_cropped2 = input_cropped2.to(device)
-                    input_cropped3 = input_cropped3.to(device)      
+                    input_cropped3 = input_cropped3.to(device)
+
                     input_cropped  = [input_cropped1,input_cropped2,input_cropped3]
                     point_netG.eval()
                     fake_center1,fake_center2,fake  =point_netG(input_cropped)
@@ -317,7 +433,7 @@ if opt.D_choose == 1:
 ## ONLY G-NET
 ############################ 
 else:
-    for epoch in range(resume_epoch,opt.niter):
+    for epoch in range(resume_epoch, opt.niter):
         if epoch<30:
             alpha1 = 0.01
             alpha2 = 0.02
@@ -331,8 +447,10 @@ else:
         for i, data in enumerate(dataloader, 0):
             
             real_point, target = data
-            
-    
+
+            # computing whole point cloud centroids
+            real_point_centroids = centeroidnp(real_point)  # bs x 3 TODO
+
             batch_size = real_point.size()[0]
             real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)       
             input_cropped1 = torch.FloatTensor(batch_size, opt.pnum, 3)
@@ -353,6 +471,15 @@ else:
                     for sp in range(opt.crop_point_num):
                         input_cropped1.data[m,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0])
                         real_center.data[m,0,sp] = real_point[m,0,distance_order[sp][0]]
+
+            # compute centroid of partial point cloud : op: bs x 3
+            input_cropped1_centroids = centeroidnp(torch.squeeze(input_cropped1, 1),
+                                                   opt.pnum - opt.crop_point_num)
+
+            # transforming both the partial pc and gt point cloud before ifps
+            tx = tranformation_mtx(real_point_centroids, input_cropped1_centroids)  # TODO
+            input_cropped1, real_center = final_t(tx, input_cropped1, real_center)
+
             real_point = real_point.to(device)
             real_center = real_center.to(device)
             input_cropped1 = input_cropped1.to(device)
