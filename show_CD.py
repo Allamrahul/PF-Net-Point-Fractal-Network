@@ -82,9 +82,56 @@ IDX = 1
 def save(p, filename):
     np.savetxt(filename + '.csv', torch.squeeze(p), fmt="%f,%f,%f")
 
+# TODO
+def tranformation_mtx(p1, p2): # p2 is the new centroid, p1 is the old centroid
+    """
+    computes the transformation matrix between source point cloud centroid and destiantion point cloud centroid p2
+    """
+    p = torch.FloatTensor(
+        [[1, 0, 0, p2[0] - p1[0]],
+         [0, 1, 0, p2[1] - p1[1]],
+         [0, 0, 1, p2[2] - p1[2]],
+         [0, 0, 0, 1]]
+    )
+    return p
 
 import copy
 
+# TODO
+def final_t(tx, input_cropped1_tmp, real_point_tmp):
+    """
+    Accepts tx, the transformation mtx, the input_cropped points and the real_points (ground truth)
+    """
+    # deep copy
+    input_cropped1_tmp = copy.deepcopy(input_cropped1_tmp)
+    real_point_tmp = copy.deepcopy(real_point_tmp)
+
+    # squeezing both point clouds
+    input_cropped1_tmp = torch.squeeze(input_cropped1_tmp)
+    real_point_tmp = torch.squeeze(real_point_tmp)
+
+    # pad ones and add it as last column for both point clouds
+    temp = torch.ones((input_cropped1_tmp.shape[0], 1))
+    input_cropped1_p = torch.cat((input_cropped1_tmp, temp), 1)
+
+    temp = torch.ones((real_point_tmp.shape[0], 1))
+    real_point_p = torch.cat((real_point_tmp, temp), 1)
+
+    # applying the matrix transformation for both point clouds, selcting the first 3 rows and taking transpose
+    input_cropped1_p_r = torch.matmul(tx, input_cropped1_p.t())[:3, :].t()
+    real_point_p_r = torch.matmul(tx, real_point_p.t())[:3, :].t()
+
+    # unsqueezing to get the same shape back
+    return torch.unsqueeze(torch.unsqueeze(real_point_p_r,0), 0), torch.unsqueeze(input_cropped1_p_r, 0)
+
+# TODO
+def centeroidnp(arr):
+    """
+    computes centroid of point cloud
+    """
+    arr = torch.squeeze(arr).numpy()
+    print("CENT ", arr.shape)
+    return np.mean(arr[:, 0]), np.mean(arr[:, 1]), np.mean(arr[:, 2])
 
 for i, data in enumerate(test_dataloader, 0):
 
@@ -96,6 +143,11 @@ for i, data in enumerate(test_dataloader, 0):
     real_point = torch.unsqueeze(real_point, 1)
     batch_size = real_point.size()[0]
     # print("Real point shape", real_point.shape)
+
+    # computing centroid of ground truth
+    real_point_centroid = centeroidnp(real_point) # TODO
+    # print("Real point centroid ", real_point_centroid)
+
 
 
     real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)  # target
@@ -145,16 +197,33 @@ for i, data in enumerate(test_dataloader, 0):
     input_cropped1 = torch.squeeze(input_cropped1, 1)
     # print("shape here ", input_cropped1.shape)
 
-    input_cropped1 = translate_pc(input_cropped1)
+    # input_cropped1 = translate_pc(input_cropped1)
+
+    # centroid of input_cropped1
+    input_cropped1_centroid = centeroidnp(input_cropped1) # TODO
+
+    # computing the transformation mtx
+    tx = tranformation_mtx(real_point_centroid, input_cropped1_centroid) # TODO
 
     # print(tx)
 
-    # save(input_cropped1, "input_cropped1_before_tran")
-    # save(real_center, "real_center_before_tran")
+    save(input_cropped1, "input_cropped1_before_tran")
+    save(real_center, "real_center_before_tran")
+
+    # getting the transformed points
+    real_center, input_cropped1 = final_t(tx, input_cropped1, real_center) # TODO
+
+    save(input_cropped1, "input_cropped1_after_tran")
+    save(real_center, "real_center_after_tran")
+    # print("Centroid of input_cropped1 ", input_cropped1_centroid)
+
+    # move the coordinate system to the new centroid
+
+    # save(input_cropped1, "input_cropped_after_trans")
+
+    # tx = tranformation_mtx(input_cropped1_centroid, real_point_centroid) # 4 x 4
     #
-    #
-    # save(input_cropped1, "input_cropped1_after_tran")
-    # save(real_center, "real_center_after_tran")
+    # input_cropped1_trans, real_point_trans = final_t(tx, input_cropped1, real_point)
 
     input_cropped2_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[1],RAN = True)
     input_cropped2     = utils.index_points(input_cropped1,input_cropped2_idx)
@@ -170,6 +239,7 @@ for i, data in enumerate(test_dataloader, 0):
     
 #    fake,fake_part = point_netG(input_cropped)
     fake_center1, fake_center2, fake = point_netG(input_cropped)  # fakes in 3 scales
+    print("fake shape ", fake.shape)
     # save(fake.detach(), "fake_fine")
 
     fake_whole = torch.cat((input_cropped_partial, fake), 1)  # putting the whole fake together
@@ -177,9 +247,10 @@ for i, data in enumerate(test_dataloader, 0):
     # save(fake_whole.detach(), "fake_whole")
 
     # save(real_center, "real_center_before")
-    print("real center before shape ", real_center.shape)
-    real_center = translate_pc(real_center)
-    save(real_center, "real_center_after")
+    print("real center shape ", real_center.shape)
+    # real_center = translate_pc(real_center)
+
+    # save(real_center, "real_center_after")
 
     fake_whole = fake_whole.to(device)
     real_point = real_point.to(device)  # real whole cloud
