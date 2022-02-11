@@ -125,13 +125,15 @@ def final_t(tx, input_cropped1_tmp, real_point_tmp):
     return torch.unsqueeze(torch.unsqueeze(real_point_p_r,0), 0), torch.unsqueeze(input_cropped1_p_r, 0)
 
 # TODO
-def centeroidnp(arr):
+def centeroidnp(arr, num=None):
     """
     computes centroid of point cloud
     """
     arr = torch.squeeze(arr).numpy()
-    print("CENT ", arr.shape)
-    return np.mean(arr[:, 0]), np.mean(arr[:, 1]), np.mean(arr[:, 2])
+    shape = arr.shape[0]
+    if num:
+        shape = num
+    return np.sum(arr[:, 0])/shape, np.sum(arr[:, 1])/shape, np.sum(arr[:, 2])/shape
 
 for i, data in enumerate(test_dataloader, 0):
 
@@ -200,7 +202,8 @@ for i, data in enumerate(test_dataloader, 0):
     # input_cropped1 = translate_pc(input_cropped1)
 
     # centroid of input_cropped1
-    input_cropped1_centroid = centeroidnp(input_cropped1) # TODO
+    print("HERE ", input_cropped1.shape)
+    input_cropped1_centroid = centeroidnp(input_cropped1, opt.pnum - opt.crop_point_num)  # TODO
 
     # computing the transformation mtx
     tx = tranformation_mtx(real_point_centroid, input_cropped1_centroid) # TODO
@@ -264,6 +267,7 @@ for i, data in enumerate(test_dataloader, 0):
     Gt_Pre = Gt_Pre + dist1/length
     Pre_Gt = Pre_Gt + dist2/length
     print(CD, Gt_Pre, Pre_Gt)
+
 
 
 print(CD, Gt_Pre, Pre_Gt)
