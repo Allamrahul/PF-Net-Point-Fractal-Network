@@ -40,7 +40,7 @@ parser.add_argument('--netD', default='', help="path to netD (to continue traini
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--drop',type=float,default=0.2)
 parser.add_argument('--num_scales',type=int,default=3,help='number of scales')
-parser.add_argument('--point_scales_list',type=list,default=[2048,1024,512],help='number of points in each scales')
+parser.add_argument('--point_scales_list',type=list,default=[1536,1024,512],help='number of points in each scales')
 parser.add_argument('--each_scales_size',type=int,default=1,help='each scales size')
 parser.add_argument('--wtl2',type=float,default=0.9,help='0 means do not use else use with this weight')
 parser.add_argument('--cropmethod', default = 'random_center', help = 'random|center|random_center')
@@ -140,7 +140,7 @@ for i, data in enumerate(test_dataloader, 0):
 
     real_point, target = data
 
-    save(real_point, "real_point_wholepc")
+    # save(real_point, "real_point_wholepc")
 
     real_point = torch.unsqueeze(real_point, 1)
     batch_size = real_point.size()[0]
@@ -189,6 +189,7 @@ for i, data in enumerate(test_dataloader, 0):
     input_cropped_partial = torch.squeeze(input_cropped_partial,1)
 
     input_cropped_partial = input_cropped_partial.to(device)
+
     real_center = torch.squeeze(real_center,1) # target
 #    real_center_key_idx = utils.farthest_point_sample(real_center,64,train = False)
 #    real_center_key = utils.index_points(real_center,real_center_key_idx)
@@ -202,22 +203,22 @@ for i, data in enumerate(test_dataloader, 0):
     # input_cropped1 = translate_pc(input_cropped1)
 
     # centroid of input_cropped1
-    print("HERE ", input_cropped1.shape)
-    input_cropped1_centroid = centeroidnp(input_cropped1, opt.pnum - opt.crop_point_num)  # TODO
+    # print("HERE ", input_cropped1.shape)
+    input_cropped1_centroid = centeroidnp(input_cropped_partial)  # TODO
 
     # computing the transformation mtx
     tx = tranformation_mtx(real_point_centroid, input_cropped1_centroid) # TODO
 
     # print(tx)
 
-    save(input_cropped1, "input_cropped1_before_tran")
-    save(real_center, "real_center_before_tran")
-
+    # save(input_cropped1, "input_cropped1_before_tran")
+    # save(real_center, "real_center_before_tran")
+    # print(input_cropped_partial.shape, real_center.shape)
     # getting the transformed points
-    real_center, input_cropped1 = final_t(tx, input_cropped1, real_center) # TODO
+    real_center, input_cropped1 = final_t(tx, input_cropped_partial, real_center) # TODO
 
-    save(input_cropped1, "input_cropped1_after_tran")
-    save(real_center, "real_center_after_tran")
+    # save(input_cropped1, "input_cropped1_after_tran")
+    # save(real_center, "real_center_after_tran")
     # print("Centroid of input_cropped1 ", input_cropped1_centroid)
 
     # move the coordinate system to the new centroid
@@ -242,7 +243,7 @@ for i, data in enumerate(test_dataloader, 0):
     
 #    fake,fake_part = point_netG(input_cropped)
     fake_center1, fake_center2, fake = point_netG(input_cropped)  # fakes in 3 scales
-    print("fake shape ", fake.shape)
+    # print("fake shape ", fake.shape)
     # save(fake.detach(), "fake_fine")
 
     fake_whole = torch.cat((input_cropped_partial, fake), 1)  # putting the whole fake together
@@ -250,7 +251,7 @@ for i, data in enumerate(test_dataloader, 0):
     # save(fake_whole.detach(), "fake_whole")
 
     # save(real_center, "real_center_before")
-    print("real center shape ", real_center.shape)
+    # print("real center shape ", real_center.shape)
     # real_center = translate_pc(real_center)
 
     # save(real_center, "real_center_after")
