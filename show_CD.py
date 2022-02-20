@@ -40,7 +40,7 @@ parser.add_argument('--netD', default='', help="path to netD (to continue traini
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--drop',type=float,default=0.2)
 parser.add_argument('--num_scales',type=int,default=3,help='number of scales')
-parser.add_argument('--point_scales_list',type=list,default=[1536,1024,512],help='number of points in each scales')
+parser.add_argument('--point_scales_list',type=list,default=[2048,1024,512],help='number of points in each scales')
 parser.add_argument('--each_scales_size',type=int,default=1,help='each scales size')
 parser.add_argument('--wtl2',type=float,default=0.9,help='0 means do not use else use with this weight')
 parser.add_argument('--cropmethod', default = 'random_center', help = 'random|center|random_center')
@@ -151,10 +151,10 @@ for i, data in enumerate(test_dataloader, 0):
     # print("Real point centroid ", real_point_centroid)
 
 
-
     real_center = torch.FloatTensor(batch_size, 1, opt.crop_point_num, 3)  # target
     input_cropped_partial =torch.FloatTensor(batch_size, 1, opt.pnum-opt.crop_point_num, 3)       # input
     input_cropped1.resize_(real_point.size()).copy_(real_point) # same size as real_point, whole pc
+    padding_zeros = torch.zeros(1, opt.crop_point_num, 3)
 
     p_origin = [0,0,0]
 
@@ -216,6 +216,11 @@ for i, data in enumerate(test_dataloader, 0):
     # print(input_cropped_partial.shape, real_center.shape)
     # getting the transformed points
     real_center, input_cropped1 = final_t(tx, input_cropped_partial, real_center) # TODO
+
+    print("B4 ", input_cropped1.shape)
+
+    input_cropped1 = torch.cat((input_cropped1, padding_zeros), 1)  # gives back 2048 points
+    print("YOLO ", input_cropped1.shape)
 
     # save(input_cropped1, "input_cropped1_after_tran")
     # save(real_center, "real_center_after_tran")

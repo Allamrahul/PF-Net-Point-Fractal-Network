@@ -37,7 +37,7 @@ parser.add_argument('--netD', default='', help="path to netD (to continue traini
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--drop',type=float,default=0.2)
 parser.add_argument('--num_scales',type=int,default=3,help='number of scales')
-parser.add_argument('--point_scales_list',type=list,default=[1536,1024,512],help='number of points in each scales')
+parser.add_argument('--point_scales_list',type=list,default=[2048, 1024, 512],help='number of points in each scales')
 parser.add_argument('--each_scales_size',type=int,default=1,help='each scales size')
 parser.add_argument('--wtl2',type=float,default=0.95,help='0 means do not use else use with this weight')
 parser.add_argument('--cropmethod', default = 'random_center', help = 'random|center|random_center')
@@ -245,6 +245,7 @@ if opt.D_choose == 1:
             input_cropped1 = torch.FloatTensor(batch_size, opt.pnum, 3) # bs x 2048 x 3
             input_cropped1 = input_cropped1.data.copy_(real_point)
             input_cropped_partial = torch.FloatTensor(batch_size, 1, opt.pnum - opt.crop_point_num, 3)
+            padding_zeros = torch.zeros(batch_size, 1, opt.crop_point_num, 3)
 
             real_point = torch.unsqueeze(real_point, 1) # bs x 1 x 2048 x 3
             input_cropped1 = torch.unsqueeze(input_cropped1, 1) # bs x 1 x 2048 x 3
@@ -303,6 +304,15 @@ if opt.D_choose == 1:
 
             input_cropped1, real_center = final_t(tx, input_cropped_partial, real_center)
 
+            # input_cropped1 - 1536  points , real_center - 512 points
+
+            # what I will do: 512 zeros back to input_cropped1,
+
+            # adding back the zeros to maintain the size for innput_cropped1
+
+            input_cropped1 = torch.cat((input_cropped1, padding_zeros), 2) # gives back 2048 points
+
+            print("YOLO ", input_cropped1.shape)
 
             real_center = Variable(real_center,requires_grad=True)
             real_center = torch.squeeze(real_center,1)
@@ -394,21 +404,21 @@ if opt.D_choose == 1:
                     input_cropped1 = input_cropped1.data.copy_(real_point)
                     real_point = torch.unsqueeze(real_point, 1)
                     input_cropped1 = torch.unsqueeze(input_cropped1,1)
-
+                    padding_zeros = torch.zeros(batch_size, 1, opt.crop_point_num, 3)
                     input_cropped_partial = torch.FloatTensor(batch_size, 1, opt.pnum - opt.crop_point_num, 3)
-                    
+
                     p_origin = [0,0,0]
-                    
+
                     if opt.cropmethod == 'random_center':
                         choice = [torch.Tensor([1,0,0]),torch.Tensor([0,0,1]),torch.Tensor([1,0,1]),torch.Tensor([-1,0,0]),torch.Tensor([-1,1,0])]
-                        
+
                         for m in range(batch_size):
                             index = random.sample(choice,1)
                             distance_list = []
                             p_center = index[0]
                             for n in range(opt.pnum):
                                 distance_list.append(distance_squre(real_point[m,0,n],p_center))
-                            distance_order = sorted(enumerate(distance_list), key  = lambda x:x[1])                         
+                            distance_order = sorted(enumerate(distance_list), key  = lambda x:x[1])
                             for sp in range(opt.crop_point_num):
                                 input_cropped1.data[m,0,distance_order[sp][0]] = torch.FloatTensor([0,0,0])
                                 real_center.data[m,0,sp] = real_point[m,0,distance_order[sp][0]]
@@ -432,9 +442,13 @@ if opt.D_choose == 1:
                     tx = tranformation_mtx(real_point_centroids, input_cropped1_centroids)  # TODO
                     input_cropped1, real_center = final_t(tx, input_cropped_partial, real_center)
 
+                    input_cropped1 = torch.cat((input_cropped1, padding_zeros), 2)  # gives back 2048 points
+
+                    print("YOLO val", input_cropped1.shape)
+
                     real_center = real_center.to(device)
                     real_center = torch.squeeze(real_center,1)
-                    input_cropped1 = input_cropped1.to(device) 
+                    input_cropped1 = input_cropped1.to(device)
                     input_cropped1 = torch.squeeze(input_cropped1,1)
                     input_cropped2_idx = utils.farthest_point_sample(input_cropped1,opt.point_scales_list[1],RAN = True)
                     input_cropped2     = utils.index_points(input_cropped1,input_cropped2_idx)
@@ -493,7 +507,7 @@ else:
             input_cropped1 = input_cropped1.data.copy_(real_point)
             real_point = torch.unsqueeze(real_point, 1)
             input_cropped1 = torch.unsqueeze(input_cropped1,1)
-
+            padding_zeros = torch.zeros(batch_size, 1, opt.crop_point_num, 3)
             input_cropped_partial = torch.FloatTensor(batch_size, 1, opt.pnum - opt.crop_point_num, 3)
 
             p_origin = [0,0,0]
@@ -528,6 +542,9 @@ else:
             # transforming both the partial pc and gt point cloud before ifps
             tx = tranformation_mtx(real_point_centroids, input_cropped1_centroids)  # TODO
             input_cropped1, real_center = final_t(tx, input_cropped_partial, real_center)
+
+            input_cropped1 = torch.cat((input_cropped1, padding_zeros), 2)  # gives back 2048 points
+            print("YOLO ", input_cropped1.shape)
 
             real_point = real_point.to(device)
             real_center = real_center.to(device)
